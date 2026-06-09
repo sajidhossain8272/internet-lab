@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from internet_experiment_lab.core import ExperimentEngine
+from internet_experiment_lab.custom_model import CustomModelRunner, default_custom_spec
 from internet_experiment_lab.tweets import TweetGenerator
 
 
@@ -26,6 +27,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--size", type=int, default=1000, help="Synthetic rows to generate.")
     run_parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     run_parser.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Directory for generated datasets and charts.",
+    )
+
+    custom_parser = subparsers.add_parser("run-custom", help="Run a custom JSON model spec")
+    custom_parser.add_argument("spec", help="Path to a JSON model spec.")
+    custom_parser.add_argument("--size", type=int, default=1000, help="Synthetic rows to generate.")
+    custom_parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    custom_parser.add_argument(
         "--output-dir",
         default="outputs",
         help="Directory for generated datasets and charts.",
@@ -75,6 +86,45 @@ def run_experiment(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_custom_experiment(args: argparse.Namespace) -> int:
+    from internet_experiment_lab.visualization import ChartRenderer
+
+    spec_path = Path(args.spec)
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    custom = CustomModelRunner().run(spec, size=args.size, seed=args.seed)
+    result = custom.result
+
+    output_dir = Path(args.output_dir)
+    data_dir = output_dir / "datasets"
+    chart_dir = output_dir / "charts" / result.name
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    dataset_path = data_dir / f"{result.name}.csv"
+    result.dataset.to_csv(dataset_path, index=False)
+    chart_paths = ChartRenderer().render(result, chart_dir)
+    tweet = TweetGenerator().generate(result)
+
+    print(f"\nInternet Experiment Lab: {result.title}")
+    print("=" * (25 + len(result.title)))
+    print(result.insight)
+    print("\nCustom design")
+    for step in custom.design["run_steps"]:
+        print(f"- {step}")
+    print("\nMetrics")
+    for key, value in result.metrics.items():
+        if isinstance(value, float):
+            print(f"- {key}: {value:,.3f}")
+        else:
+            print(f"- {key}: {value}")
+    print("\nTweet-ready caption")
+    print(tweet)
+    print("\nSaved outputs")
+    print(f"- dataset: {dataset_path}")
+    for chart_path in chart_paths:
+        print(f"- chart: {chart_path}")
+    return 0
+
+
 def list_experiments() -> int:
     engine = ExperimentEngine()
     print("Available experiments:")
@@ -112,6 +162,16 @@ def app(environ: dict[str, Any], start_response: Any) -> list[bytes]:
             design = ExperimentEngine().design(experiment_name)
             return _json_response(start_response, _web_result_payload(result, design.__dict__))
 
+        if path == "api/custom/template":
+            return _json_response(start_response, {"spec": default_custom_spec()})
+
+        if path == "api/custom/run":
+            payload = _read_json_body(environ)
+            size = int(payload.get("size", 1000))
+            seed = int(payload.get("seed", 42))
+            custom = CustomModelRunner().run(payload.get("spec", {}), size=size, seed=seed)
+            return _json_response(start_response, _web_result_payload(custom.result, custom.design))
+
         if path.startswith("run/"):
             experiment_name = path.split("/", 1)[1]
             result = _run_web_experiment(experiment_name, query)
@@ -122,6 +182,8 @@ def app(environ: dict[str, Any], start_response: Any) -> list[bytes]:
 
         return _html_response(start_response, _not_found_page(path), status="404 Not Found")
     except Exception as exc:
+        if path.startswith("api/"):
+            return _json_response(start_response, {"error": str(exc)}, status="500 Internal Server Error")
         return _html_response(start_response, _error_page(exc), status="500 Internal Server Error")
 
 
@@ -129,6 +191,18 @@ def _run_web_experiment(experiment_name: str, query: dict[str, list[str]]) -> An
     size = _int_query(query, "size", 1000)
     seed = _int_query(query, "seed", 42)
     return ExperimentEngine().run(experiment_name, size=size, seed=seed)
+
+
+def _read_json_body(environ: dict[str, Any]) -> dict[str, Any]:
+    length = int(environ.get("CONTENT_LENGTH") or 0)
+    body = environ["wsgi.input"].read(length) if length else b"{}"
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON body: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("JSON body must be an object.")
+    return payload
 
 
 def _web_result_payload(result: Any, design: dict[str, Any]) -> dict[str, Any]:
@@ -208,17 +282,18 @@ def _home_page() -> str:
         for experiment in experiments
     )
     experiment_payload = json.dumps([experiment.__dict__ for experiment in experiments])
+    custom_template = json.dumps(default_custom_spec(), indent=2)
     return _page(
         "Internet Experiment Lab",
         f"""
         <section class="hero">
           <p class="eyebrow">Synthetic Data Simulation Engine</p>
           <h1>Internet Experiment Lab</h1>
-          <p>Design an experiment, run the simulation engine, watch the lab console, and generate a Twitter-ready result page.</p>
+          <p>Design models, run synthetic experiments, watch the lab console, and generate Twitter-ready result pages.</p>
         </section>
         <section class="lab-shell">
           <form id="lab-form" class="control-panel">
-            <h2>Run Console</h2>
+            <h2>Preset Runner</h2>
             <label>Experiment<select id="experiment">{options}</select></label>
             <label>Rows<input id="size" type="number" min="10" max="5000" value="1000"></label>
             <label>Seed<input id="seed" type="number" value="42"></label>
@@ -229,6 +304,21 @@ def _home_page() -> str:
             <pre id="terminal">$ python app.py run economy
 waiting for experiment...</pre>
           </section>
+        </section>
+        <section class="designer-shell">
+          <div class="designer-intro">
+            <p class="eyebrow">Custom Model Designer</p>
+            <h2>Build any synthetic experiment from a model spec</h2>
+            <p>Define distributions, derived formulas, metrics, and charts. The engine runs the spec without arbitrary Python execution.</p>
+          </div>
+          <form id="custom-form" class="designer-form">
+            <div class="designer-controls">
+              <label>Rows<input id="custom-size" type="number" min="10" max="10000" value="1000"></label>
+              <label>Seed<input id="custom-seed" type="number" value="99"></label>
+              <button type="submit">Design & Run Custom Model</button>
+            </div>
+            <label>Model JSON<textarea id="custom-spec" spellcheck="false">{escape(custom_template)}</textarea></label>
+          </form>
         </section>
         <section id="design-panel" class="design-panel" hidden></section>
         <section id="results" class="results" hidden></section>
@@ -278,6 +368,10 @@ const designPanel = document.querySelector("#design-panel");
 const experimentInput = document.querySelector("#experiment");
 const sizeInput = document.querySelector("#size");
 const seedInput = document.querySelector("#seed");
+const customForm = document.querySelector("#custom-form");
+const customSpecInput = document.querySelector("#custom-spec");
+const customSizeInput = document.querySelector("#custom-size");
+const customSeedInput = document.querySelector("#custom-seed");
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const fmt = (value) => {
@@ -355,6 +449,63 @@ form.addEventListener("submit", async (event) => {
   await wait(250);
   addLine("metrics computed.");
   addLine("rendering charts and result page.");
+  renderResults(payload);
+  addLine("done.");
+});
+
+customForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  results.hidden = true;
+  designPanel.hidden = true;
+
+  let spec;
+  try {
+    spec = JSON.parse(customSpecInput.value);
+  } catch (error) {
+    setLine("$ internet-lab custom-model\nJSON parse failed.");
+    addLine(error.message);
+    return;
+  }
+
+  const size = Number(customSizeInput.value || 1000);
+  const seed = Number(customSeedInput.value || 42);
+  const modelName = spec.name || "custom_model";
+
+  setLine(`$ python app.py run-custom ${modelName} --size ${size} --seed ${seed}`);
+  addLine("reading custom model spec...");
+  await wait(300);
+  addLine(`hypothesis: ${spec.hypothesis || "custom synthetic experiment"}`);
+  await wait(300);
+  addLine(`variables requested: ${(spec.variables || []).map((item) => item.name).join(", ") || "none"}`);
+  await wait(300);
+  addLine(`derived formulas: ${(spec.derived || []).map((item) => item.name).join(", ") || "none"}`);
+  await wait(300);
+  addLine("submitting model to simulation engine...");
+
+  let payload;
+  try {
+    const response = await fetch("/api/custom/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec, size, seed }),
+    });
+    payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Custom model failed.");
+    }
+  } catch (error) {
+    addLine(`custom run failed: ${error.message}`);
+    return;
+  }
+
+  renderDesign(payload.design);
+  await wait(350);
+  addLine("custom distributions sampled.");
+  await wait(350);
+  addLine("derived formulas evaluated safely.");
+  await wait(350);
+  addLine("metrics computed.");
+  addLine("rendering custom result page.");
   renderResults(payload);
   addLine("done.");
 });
@@ -508,16 +659,23 @@ def _page(title: str, body: str) -> str:
     h3 {{ margin: 0 0 8px; font-size: 15px; text-transform: uppercase; letter-spacing: .06em; }}
     .hero p:not(.eyebrow) {{ max-width: 720px; font-size: 20px; line-height: 1.55; }}
     .lab-shell {{ display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 18px; align-items: stretch; }}
-    .control-panel, .terminal-panel, .design-panel, .results section, .tweet, .chart {{ border: 2px solid #111; background: #fff; }}
+    .control-panel, .terminal-panel, .design-panel, .designer-shell, .results section, .tweet, .chart {{ border: 2px solid #111; background: #fff; }}
     .control-panel {{ padding: 18px; }}
     .control-panel h2 {{ margin-top: 0; }}
     label {{ display: grid; gap: 7px; margin: 0 0 14px; font-weight: 800; }}
-    select, input {{ width: 100%; min-height: 42px; border: 2px solid #111; background: #fff; color: #111; padding: 8px 10px; font: inherit; }}
+    select, input, textarea {{ width: 100%; min-height: 42px; border: 2px solid #111; background: #fff; color: #111; padding: 8px 10px; font: inherit; }}
+    textarea {{ min-height: 460px; resize: vertical; font: 13px/1.45 Consolas, "SFMono-Regular", monospace; }}
     button {{ width: 100%; min-height: 46px; border: 2px solid #111; background: #111; color: #fff; font: inherit; font-weight: 900; cursor: pointer; }}
     button:hover {{ background: #333; }}
     .terminal-panel {{ min-height: 280px; display: grid; grid-template-rows: auto 1fr; background: #111; color: #f8f8f2; }}
     .terminal-title {{ padding: 10px 14px; border-bottom: 1px solid #555; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }}
     pre {{ margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; font: 14px/1.55 Consolas, "SFMono-Regular", monospace; }}
+    .designer-shell {{ margin-top: 18px; padding: 18px; }}
+    .designer-intro {{ border-bottom: 2px solid #111; padding-bottom: 14px; margin-bottom: 18px; }}
+    .designer-intro h2 {{ margin-top: 0; font-size: 32px; }}
+    .designer-intro p:not(.eyebrow) {{ max-width: 760px; line-height: 1.55; }}
+    .designer-form {{ display: grid; grid-template-columns: minmax(220px, 280px) 1fr; gap: 18px; align-items: start; }}
+    .designer-controls {{ position: sticky; top: 18px; }}
     .design-panel {{ margin-top: 18px; padding: 18px; }}
     .design-panel h2 {{ margin-top: 0; }}
     .design-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }}
@@ -538,7 +696,7 @@ def _page(title: str, body: str) -> str:
     .table-wrap {{ overflow-x: auto; }}
     .preview {{ width: 100%; border-collapse: collapse; background: #fff; font-size: 14px; overflow-wrap: anywhere; }}
     .preview th, .preview td {{ border: 1px solid #111; padding: 8px; text-align: left; }}
-    @media (max-width: 820px) {{ .lab-shell, .design-grid {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 820px) {{ .lab-shell, .designer-form, .design-grid {{ grid-template-columns: 1fr; }} .designer-controls {{ position: static; }} }}
     @media (max-width: 640px) {{ main {{ width: min(100% - 20px, 1080px); }} h1 {{ font-size: 44px; }} .hero p:not(.eyebrow), .tweet {{ font-size: 17px; }} .result-head h2 {{ font-size: 26px; }} }}
   </style>
 </head>
@@ -562,6 +720,8 @@ def main() -> int:
 
     if args.command == "run":
         return run_experiment(args)
+    if args.command == "run-custom":
+        return run_custom_experiment(args)
     if args.command == "list":
         return list_experiments()
 

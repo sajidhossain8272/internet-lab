@@ -1,0 +1,100 @@
+{
+  "name": "creator_growth",
+  "title": "Creator Growth Experiment",
+  "hypothesis": "A creator's posting consistency and novelty should raise reach, but burnout risk grows with posting pressure.",
+  "variables": [
+    {
+      "name": "followers",
+      "type": "lognormal",
+      "mean": 8.2,
+      "sigma": 1.1
+    },
+    {
+      "name": "posting_days",
+      "type": "poisson",
+      "lambda": 4.2
+    },
+    {
+      "name": "novelty",
+      "type": "beta",
+      "a": 2.4,
+      "b": 3.1
+    },
+    {
+      "name": "hook_quality",
+      "type": "normal",
+      "mean": 0.62,
+      "sd": 0.16
+    },
+    {
+      "name": "uses_thread",
+      "type": "bernoulli",
+      "p": 0.35
+    },
+    {
+      "name": "niche",
+      "type": "categorical",
+      "choices": [
+        "ai",
+        "money",
+        "health",
+        "career"
+      ]
+    }
+  ],
+  "derived": [
+    {
+      "name": "reach_score",
+      "formula": "log(followers) * (1 + novelty + hook_quality + uses_thread * 0.25) + posting_days * 0.4"
+    },
+    {
+      "name": "burnout_risk",
+      "formula": "sigmoid(-2 + posting_days * 0.45 + hook_quality * 0.5)"
+    },
+    {
+      "name": "viral",
+      "formula": "reach_score > 18"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "average_reach_score",
+      "op": "mean",
+      "column": "reach_score"
+    },
+    {
+      "name": "viral_rate",
+      "op": "rate",
+      "column": "viral"
+    },
+    {
+      "name": "average_burnout_risk",
+      "op": "mean",
+      "column": "burnout_risk"
+    },
+    {
+      "name": "novelty_reach_correlation",
+      "op": "corr",
+      "x": "novelty",
+      "y": "reach_score"
+    }
+  ],
+  "charts": [
+    {
+      "kind": "histogram",
+      "title": "Reach Score Distribution",
+      "x": "reach_score"
+    },
+    {
+      "kind": "scatter",
+      "title": "Novelty vs Reach",
+      "x": "novelty",
+      "y": "reach_score"
+    },
+    {
+      "kind": "bar",
+      "title": "Niche Mix",
+      "x": "niche"
+    }
+  ]
+}

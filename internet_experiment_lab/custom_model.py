@@ -25,6 +25,10 @@ SAFE_FUNCTIONS = {
     "where": np.where,
 }
 
+SUPPORTED_VARIABLE_TYPES = {"normal", "uniform", "lognormal", "beta", "poisson", "bernoulli", "categorical"}
+SUPPORTED_METRIC_OPS = {"mean", "median", "std", "min", "max", "rate", "count", "unique", "corr"}
+SUPPORTED_CHART_KINDS = {"histogram", "scatter", "bar"}
+
 ALLOWED_AST_NODES = (
     ast.Expression,
     ast.BinOp,
@@ -91,6 +95,49 @@ def default_custom_spec() -> dict[str, Any]:
     }
 
 
+def custom_model_schema() -> dict[str, Any]:
+    return {
+        "name": "custom_model",
+        "description": "Schema for custom synthetic model specifications.",
+        "variables": {
+            "description": "Define the input distributions for your synthetic dataset.",
+            "types": sorted(SUPPORTED_VARIABLE_TYPES),
+            "example": {
+                "name": "followers",
+                "type": "lognormal",
+                "mean": 8.2,
+                "sigma": 1.1,
+            },
+        },
+        "derived": {
+            "description": "Add derived fields with safe formulas using existing columns and allowed functions.",
+            "functions": sorted(SAFE_FUNCTIONS),
+            "example": {
+                "name": "reach_score",
+                "formula": "log(followers) * (1 + novelty + hook_quality) + posting_days * 0.4",
+            },
+        },
+        "metrics": {
+            "description": "Compute named summary metrics from dataset fields.",
+            "operations": sorted(SUPPORTED_METRIC_OPS),
+            "example": {
+                "name": "average_reach_score",
+                "op": "mean",
+                "column": "reach_score",
+            },
+        },
+        "charts": {
+            "description": "Generate charts from data fields.",
+            "kinds": sorted(SUPPORTED_CHART_KINDS),
+            "example": {
+                "kind": "histogram",
+                "title": "Reach Score Distribution",
+                "x": "reach_score",
+            },
+        },
+    }
+
+
 class CustomModelRunner:
     def run(self, spec: dict[str, Any], size: int = 1000, seed: int | None = None) -> CustomRun:
         normalized = self._normalize_spec(spec)
@@ -135,6 +182,10 @@ class CustomModelRunner:
             raise ValueError("Custom model can define up to 8 charts.")
         self._validate_normalized_spec(normalized)
         return normalized
+
+    def validate(self, spec: dict[str, Any]) -> bool:
+        self._normalize_spec(spec)
+        return True
 
     def _generate_dataset(self, spec: dict[str, Any], size: int, rng: np.random.Generator) -> pd.DataFrame:
         if size < 10 or size > 10000:

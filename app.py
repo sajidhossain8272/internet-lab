@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from internet_experiment_lab.core import ExperimentEngine
-from internet_experiment_lab.custom_model import CustomModelRunner, default_custom_spec
+from internet_experiment_lab.custom_model import CustomModelRunner, custom_model_schema, default_custom_spec
 from internet_experiment_lab.tweets import TweetGenerator
 
 
@@ -164,6 +164,15 @@ def app(environ: dict[str, Any], start_response: Any) -> list[bytes]:
 
         if path == "api/custom/template":
             return _json_response(start_response, {"spec": default_custom_spec()})
+
+        if path == "api/custom/schema":
+            return _json_response(start_response, {"schema": custom_model_schema()})
+
+        if path == "api/custom/validate":
+            payload = _read_json_body(environ)
+            custom = CustomModelRunner()
+            custom.validate(payload.get("spec", {}))
+            return _json_response(start_response, {"valid": True})
 
         if path == "api/custom/run":
             payload = _read_json_body(environ)
@@ -328,9 +337,13 @@ waiting for experiment...</pre>
                   <li>Define synthetic columns in <strong>variables</strong> using distributions like normal, beta, poisson, bernoulli, lognormal, uniform, or categorical.</li>
                   <li>Add <strong>derived</strong> formulas to compute new fields from existing ones, for example <code>sigmoid(-2 + posting_days * 0.45)</code>.</li>
                   <li>Add <strong>metrics</strong> to summarize your dataset with mean, median, rate, count, unique, or correlation values.</li>
-                  <li>Add <strong>charts</strong> with histogram, scatter, or bar, then click <strong>Design &amp; Run Custom Model</strong> to validate and execute the spec.</li>
+                  <li>Add <strong>charts</strong> with histogram, scatter, or bar, then click <strong>Validate JSON</strong> before running your spec.</li>
                 </ol>
-                <p>Tip: the editor validates JSON on submit. Use safe formula functions like <code>log</code>, <code>sqrt</code>, <code>sigmoid</code>, <code>clip</code>, <code>where</code>, <code>minimum</code>, and <code>maximum</code>. The output is synthetic data, not real-world observations.</p>
+                <div class="validation-toolbar">
+                  <button id="custom-validate" type="button">Validate JSON</button>
+                  <div id="custom-validation-output" class="validation-output" aria-live="polite"></div>
+                </div>
+                <p>Tip: the editor validates JSON before run. Use safe formula functions like <code>log</code>, <code>sqrt</code>, <code>sigmoid</code>, <code>clip</code>, <code>where</code>, <code>minimum</code>, and <code>maximum</code>. The output is synthetic data, not real-world observations.</p>
               </section>
               <form id="custom-form" class="designer-form">
                 <div class="designer-controls">
@@ -395,6 +408,8 @@ const customForm = document.querySelector("#custom-form");
 const customSpecInput = document.querySelector("#custom-spec");
 const customSizeInput = document.querySelector("#custom-size");
 const customSeedInput = document.querySelector("#custom-seed");
+const customValidateButton = document.querySelector("#custom-validate");
+const customValidationOutput = document.querySelector("#custom-validation-output");
 const tabs = document.querySelectorAll(".tab");
 const panels = document.querySelectorAll(".tab-panel");
 
@@ -532,6 +547,17 @@ customForm.addEventListener("submit", async (event) => {
 
   let payload;
   try {
+    const validateResponse = await fetch("/api/custom/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec }),
+    });
+    const validatePayload = await validateResponse.json();
+    if (!validateResponse.ok) {
+      throw new Error(validatePayload.error || "Custom model validation failed.");
+    }
+    addLine("custom model validated.");
+
     const response = await fetch("/api/custom/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -556,6 +582,32 @@ customForm.addEventListener("submit", async (event) => {
   addLine("rendering custom result page.");
   renderResults(payload);
   addLine("done.");
+});
+
+customValidateButton?.addEventListener("click", async () => {
+  customValidationOutput.textContent = "Validating JSON...";
+  let spec;
+  try {
+    spec = JSON.parse(customSpecInput.value);
+  } catch (error) {
+    customValidationOutput.textContent = `JSON parse failed: ${error.message}`;
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/custom/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Validation failed.");
+    }
+    customValidationOutput.textContent = "JSON is valid. Ready to run.";
+  } catch (error) {
+    customValidationOutput.textContent = `Validation error: ${error.message}`;
+  }
 });
 
 function renderDesign(design) {

@@ -33,8 +33,13 @@ How to use the JSON editor:
 1. Open the `Custom Model` tab on the homepage.
 2. Edit the starter JSON template, updating `name`, `title`, and `hypothesis`.
 3. Define `variables` and optional `derived` fields, then add `metrics` and `charts`.
-4. Click `Design & Run Custom Model` to validate and execute the spec.
+4. Click `Validate JSON` to verify the spec, then click `Design & Run Custom Model`.
 5. Inspect the generated dataset preview, metrics, and charts in the results panel.
+
+The web UI now includes schema validation for custom specs and exposes two new API endpoints:
+
+- `/api/custom/schema` returns the supported custom model schema metadata
+- `/api/custom/validate` checks a spec and reports validation errors before running it
 
 Both modes show a terminal-style progress log, then generate the result page, SVG charts, metrics, tweet caption, and dataset preview dynamically.
 

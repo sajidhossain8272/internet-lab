@@ -31,3 +31,15 @@ def test_custom_model_unknown_formula_name():
     spec["derived"][0]["formula"] = "log(unknown_field)"
     with pytest.raises(ValueError, match="Formula references unknown name"):
         CustomModelRunner().run(spec, size=100, seed=1)
+
+
+def test_custom_model_validate_success():
+    spec = default_custom_spec()
+    assert CustomModelRunner().validate(spec) is True
+
+
+def test_custom_model_validate_failure():
+    spec = default_custom_spec()
+    spec["variables"][0]["type"] = "bad"
+    with pytest.raises(ValueError, match="Unsupported variable type"):
+        CustomModelRunner().validate(spec)

@@ -90,6 +90,47 @@ Supported metric operations are `mean`, `median`, `std`, `min`, `max`, `rate`, `
 
 Supported chart types are `histogram`, `scatter`, and `bar`.
 
+## Why this project is useful
+
+This repository is a lightweight synthetic experiment lab for prototyping data simulations and visualizing results quickly. It is useful for:
+
+- exploring built-in synthetic experiment templates
+- designing custom experiments with JSON model specs instead of Python code
+- generating charts, metrics, dataset previews, and caption text in one flow
+- running experiments through both CLI and web UI interfaces
+
+## What it needs
+
+The project is functional, but it still needs:
+
+- an automated test suite for built-in experiments and custom JSON specs
+- clearer JSON spec documentation and validation examples
+- better error handling for invalid custom models
+- packaging or distribution support for installation as a library
+- performance tuning and benchmarking for larger dataset sizes
+- additional built-in experiment templates and metric/chart coverage
+
+## Contributing
+
+Contributions are welcome. Good contributions include:
+
+- adding unit or integration tests for synthetic dataset generation
+- improving the custom model JSON schema and editor validation
+- extending built-in experiments with new synthetic use cases
+- refining the web UI experience and tab interaction behavior
+- adding documentation, examples, and deployment notes
+
+Please follow these basic guidelines:
+
+- fork the repository and create a feature branch
+- keep changes small and focused
+- include tests or examples for new behavior
+- document any public API or spec changes in the README
+
+## License
+
+This project is open source under the MIT License.
+
 ## Add A New Experiment
 
 Create a new file in `internet_experiment_lab/experiments/` and define a `BaseExperiment` subclass:

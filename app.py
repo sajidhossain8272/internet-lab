@@ -101,20 +101,16 @@ def app(environ: dict[str, Any], start_response: Any) -> list[bytes]:
             ]
             return _json_response(start_response, {"experiments": payload})
 
+        if path.startswith("api/design/"):
+            experiment_name = path.split("/", 2)[2]
+            design = ExperimentEngine().design(experiment_name)
+            return _json_response(start_response, {"design": design.__dict__})
+
         if path.startswith("api/run/"):
             experiment_name = path.split("/", 2)[2]
             result = _run_web_experiment(experiment_name, query)
-            return _json_response(
-                start_response,
-                {
-                    "name": result.name,
-                    "title": result.title,
-                    "metrics": result.metrics,
-                    "insight": result.insight,
-                    "tweet": TweetGenerator().generate(result),
-                    "preview": result.dataset.head(10).to_dict(orient="records"),
-                },
-            )
+            design = ExperimentEngine().design(experiment_name)
+            return _json_response(start_response, _web_result_payload(result, design.__dict__))
 
         if path.startswith("run/"):
             experiment_name = path.split("/", 1)[1]
@@ -133,6 +129,44 @@ def _run_web_experiment(experiment_name: str, query: dict[str, list[str]]) -> An
     size = _int_query(query, "size", 1000)
     seed = _int_query(query, "seed", 42)
     return ExperimentEngine().run(experiment_name, size=size, seed=seed)
+
+
+def _web_result_payload(result: Any, design: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": result.name,
+        "title": result.title,
+        "design": design,
+        "metrics": result.metrics,
+        "insight": result.insight,
+        "tweet": TweetGenerator().generate(result),
+        "preview": result.dataset.head(12).to_dict(orient="records"),
+        "charts": _chart_payloads(result),
+    }
+
+
+def _chart_payloads(result: Any) -> list[dict[str, Any]]:
+    charts: list[dict[str, Any]] = []
+    for spec in result.charts:
+        payload: dict[str, Any] = {
+            "kind": spec.kind,
+            "title": spec.title,
+            "x": spec.x,
+            "y": spec.y,
+        }
+        if spec.kind == "histogram" and spec.x:
+            values = result.dataset[spec.x]
+            if spec.x == "salary":
+                values = values[values > 0]
+            payload["values"] = values.astype(float).round(4).tolist()
+        elif spec.kind == "scatter" and spec.x and spec.y:
+            sample = result.dataset[[spec.x, spec.y]].head(220)
+            payload["points"] = sample.astype(float).round(4).to_dict(orient="records")
+        elif spec.kind == "bar" and spec.x:
+            counts = result.dataset[spec.x].astype(str).value_counts().sort_index()
+            payload["labels"] = counts.index.tolist()
+            payload["counts"] = counts.astype(int).tolist()
+        charts.append(payload)
+    return charts
 
 
 def _int_query(query: dict[str, list[str]], key: str, default: int) -> int:
@@ -169,24 +203,37 @@ def _json_response(start_response: Any, payload: dict[str, Any], status: str = "
 def _home_page() -> str:
     engine = ExperimentEngine()
     experiments = engine.list_experiments()
-    links = "\n".join(
-        f"""
-        <a class="experiment" href="/run/{escape(experiment.name)}">
-          <strong>{escape(experiment.title)}</strong>
-          <span>{escape(experiment.description)}</span>
-        </a>
-        """
+    options = "\n".join(
+        f"<option value=\"{escape(experiment.name)}\">{escape(experiment.title)}</option>"
         for experiment in experiments
     )
+    experiment_payload = json.dumps([experiment.__dict__ for experiment in experiments])
     return _page(
         "Internet Experiment Lab",
         f"""
         <section class="hero">
           <p class="eyebrow">Synthetic Data Simulation Engine</p>
           <h1>Internet Experiment Lab</h1>
-          <p>Run economy, attention, jobs, passwords, and behavior simulations with Twitter-ready summaries.</p>
+          <p>Design an experiment, run the simulation engine, watch the lab console, and generate a Twitter-ready result page.</p>
         </section>
-        <section class="grid">{links}</section>
+        <section class="lab-shell">
+          <form id="lab-form" class="control-panel">
+            <h2>Run Console</h2>
+            <label>Experiment<select id="experiment">{options}</select></label>
+            <label>Rows<input id="size" type="number" min="10" max="5000" value="1000"></label>
+            <label>Seed<input id="seed" type="number" value="42"></label>
+            <button type="submit">Run Experiment</button>
+          </form>
+          <section class="terminal-panel">
+            <div class="terminal-title">internet-lab cli</div>
+            <pre id="terminal">$ python app.py run economy
+waiting for experiment...</pre>
+          </section>
+        </section>
+        <section id="design-panel" class="design-panel" hidden></section>
+        <section id="results" class="results" hidden></section>
+        <script>window.EXPERIMENTS = {experiment_payload};</script>
+        <script>{_lab_script()}</script>
         """,
     )
 
@@ -222,6 +269,223 @@ def _error_page(exc: Exception) -> str:
     return _page("Error", f"<section class='hero compact'><h1>Experiment failed</h1><p>{escape(str(exc))}</p></section>")
 
 
+def _lab_script() -> str:
+    return r"""
+const form = document.querySelector("#lab-form");
+const terminal = document.querySelector("#terminal");
+const results = document.querySelector("#results");
+const designPanel = document.querySelector("#design-panel");
+const experimentInput = document.querySelector("#experiment");
+const sizeInput = document.querySelector("#size");
+const seedInput = document.querySelector("#seed");
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const fmt = (value) => {
+  if (typeof value === "number") {
+    if (value >= 0 && value <= 1) return `${(value * 100).toFixed(1)}%`;
+    return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+  return String(value);
+};
+const titleize = (text) => text.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
+const addLine = (line) => {
+  terminal.textContent += `\n${line}`;
+  terminal.scrollTop = terminal.scrollHeight;
+};
+const setLine = (line) => {
+  terminal.textContent = line;
+  terminal.scrollTop = terminal.scrollHeight;
+};
+
+experimentInput.addEventListener("change", () => {
+  const name = experimentInput.value;
+  setLine(`$ python app.py run ${name}\nwaiting for experiment...`);
+  results.hidden = true;
+  designPanel.hidden = true;
+});
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = experimentInput.value;
+  const size = Number(sizeInput.value || 1000);
+  const seed = Number(seedInput.value || 42);
+  results.hidden = true;
+  designPanel.hidden = true;
+
+  setLine(`$ python app.py run ${name} --size ${size} --seed ${seed}`);
+  addLine("booting Internet Experiment Lab...");
+  await wait(300);
+  addLine("loading modular experiment engine...");
+
+  let designPayload;
+  try {
+    const designResponse = await fetch(`/api/design/${name}`);
+    designPayload = await designResponse.json();
+  } catch (error) {
+    addLine(`design failed: ${error.message}`);
+    return;
+  }
+
+  const design = designPayload.design;
+  await wait(300);
+  addLine(`designing hypothesis: ${design.hypothesis}`);
+  renderDesign(design);
+  await wait(350);
+  addLine(`synthetic variables: ${design.synthetic_variables.join(", ")}`);
+  await wait(350);
+  addLine(`metric plan: ${design.metric_plan.join("; ")}`);
+  await wait(350);
+  addLine("running simulation...");
+
+  const runPromise = fetch(`/api/run/${name}?size=${size}&seed=${seed}`).then((response) => response.json());
+  for (const step of design.run_steps) {
+    await wait(420);
+    addLine(`> ${step}`);
+  }
+  addLine("waiting for engine result...");
+
+  let payload;
+  try {
+    payload = await runPromise;
+  } catch (error) {
+    addLine(`run failed: ${error.message}`);
+    return;
+  }
+
+  await wait(250);
+  addLine("metrics computed.");
+  addLine("rendering charts and result page.");
+  renderResults(payload);
+  addLine("done.");
+});
+
+function renderDesign(design) {
+  designPanel.hidden = false;
+  designPanel.innerHTML = `
+    <h2>Experiment Design</h2>
+    <p>${escapeHtml(design.hypothesis)}</p>
+    <div class="design-grid">
+      ${designBlock("Variables", design.synthetic_variables)}
+      ${designBlock("Metrics", design.metric_plan)}
+      ${designBlock("Visuals", design.visual_plan)}
+    </div>
+  `;
+}
+
+function designBlock(title, items) {
+  return `<div><h3>${title}</h3><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`;
+}
+
+function renderResults(payload) {
+  results.hidden = false;
+  const metrics = Object.entries(payload.metrics)
+    .map(([key, value]) => `<li><span>${titleize(key)}</span><strong>${fmt(value)}</strong></li>`)
+    .join("");
+  const charts = payload.charts.map(renderChart).join("");
+  const table = renderTable(payload.preview);
+  results.innerHTML = `
+    <section class="result-head">
+      <p class="eyebrow">Generated Result</p>
+      <h2>${escapeHtml(payload.title)}</h2>
+      <p>${escapeHtml(payload.insight)}</p>
+    </section>
+    <section class="tweet">${escapeHtml(payload.tweet)}</section>
+    <section><h2>Metrics</h2><ul class="metrics">${metrics}</ul></section>
+    <section><h2>Charts</h2><div class="chart-grid">${charts}</div></section>
+    <section><h2>Dataset Preview</h2>${table}</section>
+  `;
+  results.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderChart(chart) {
+  if (chart.kind === "histogram") return chartFrame(chart.title, histogramSvg(chart.values || []));
+  if (chart.kind === "scatter") return chartFrame(chart.title, scatterSvg(chart.points || [], chart.x, chart.y));
+  if (chart.kind === "bar") return chartFrame(chart.title, barSvg(chart.labels || [], chart.counts || []));
+  return "";
+}
+
+function chartFrame(title, svg) {
+  return `<figure class="chart"><figcaption>${escapeHtml(title)}</figcaption>${svg}</figure>`;
+}
+
+function histogramSvg(values) {
+  if (!values.length) return emptySvg();
+  const width = 520, height = 260, pad = 34, bins = 18;
+  const min = Math.min(...values), max = Math.max(...values);
+  const span = max - min || 1;
+  const counts = Array.from({ length: bins }, () => 0);
+  values.forEach((value) => counts[Math.min(bins - 1, Math.floor(((value - min) / span) * bins))]++);
+  const maxCount = Math.max(...counts) || 1;
+  const barWidth = (width - pad * 2) / bins;
+  const bars = counts.map((count, index) => {
+    const h = (count / maxCount) * (height - pad * 2);
+    const x = pad + index * barWidth;
+    const y = height - pad - h;
+    return `<rect x="${x}" y="${y}" width="${Math.max(1, barWidth - 2)}" height="${h}" />`;
+  }).join("");
+  return svgWrap(width, height, `${axis(width, height, pad)}${bars}`);
+}
+
+function scatterSvg(points, xKey, yKey) {
+  if (!points.length) return emptySvg();
+  const width = 520, height = 260, pad = 34;
+  const xs = points.map((point) => Number(point[xKey]));
+  const ys = points.map((point) => Number(point[yKey]));
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const spanX = maxX - minX || 1, spanY = maxY - minY || 1;
+  const circles = points.map((point) => {
+    const x = pad + ((Number(point[xKey]) - minX) / spanX) * (width - pad * 2);
+    const y = height - pad - ((Number(point[yKey]) - minY) / spanY) * (height - pad * 2);
+    return `<circle cx="${x}" cy="${y}" r="3" />`;
+  }).join("");
+  return svgWrap(width, height, `${axis(width, height, pad)}${circles}`);
+}
+
+function barSvg(labels, counts) {
+  if (!labels.length) return emptySvg();
+  const width = 520, height = 260, pad = 34;
+  const maxCount = Math.max(...counts) || 1;
+  const barWidth = (width - pad * 2) / labels.length;
+  const bars = labels.map((label, index) => {
+    const h = (counts[index] / maxCount) * (height - pad * 2);
+    const x = pad + index * barWidth;
+    const y = height - pad - h;
+    return `<rect x="${x}" y="${y}" width="${Math.max(8, barWidth - 8)}" height="${h}" /><text x="${x + barWidth / 2}" y="${height - 10}" text-anchor="middle">${escapeHtml(String(label)).slice(0, 10)}</text>`;
+  }).join("");
+  return svgWrap(width, height, `${axis(width, height, pad)}${bars}`);
+}
+
+function axis(width, height, pad) {
+  return `<line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" /><line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" />`;
+}
+
+function svgWrap(width, height, content) {
+  return `<svg viewBox="0 0 ${width} ${height}" role="img">${content}</svg>`;
+}
+
+function emptySvg() {
+  return svgWrap(520, 260, `<text x="260" y="130" text-anchor="middle">No chart data</text>`);
+}
+
+function renderTable(rows) {
+  if (!rows.length) return "<p>No preview rows returned.</p>";
+  const columns = Object.keys(rows[0]);
+  const head = columns.map((column) => `<th>${titleize(column)}</th>`).join("");
+  const body = rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(String(row[column]))}</td>`).join("")}</tr>`).join("");
+  return `<div class="table-wrap"><table class="preview"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+"""
+
+
 def _page(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -241,17 +505,41 @@ def _page(title: str, body: str) -> str:
     .eyebrow {{ margin: 0 0 12px; text-transform: uppercase; letter-spacing: .08em; font-size: 13px; font-weight: 800; }}
     h1 {{ margin: 0; font-size: clamp(42px, 8vw, 84px); line-height: .95; max-width: 900px; }}
     h2 {{ margin: 36px 0 14px; font-size: 22px; }}
+    h3 {{ margin: 0 0 8px; font-size: 15px; text-transform: uppercase; letter-spacing: .06em; }}
     .hero p:not(.eyebrow) {{ max-width: 720px; font-size: 20px; line-height: 1.55; }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }}
-    .experiment {{ display: block; min-height: 150px; padding: 18px; border: 2px solid #111; text-decoration: none; background: #fff; }}
-    .experiment strong {{ display: block; font-size: 20px; margin-bottom: 12px; }}
-    .experiment span {{ color: #333; line-height: 1.45; }}
+    .lab-shell {{ display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 18px; align-items: stretch; }}
+    .control-panel, .terminal-panel, .design-panel, .results section, .tweet, .chart {{ border: 2px solid #111; background: #fff; }}
+    .control-panel {{ padding: 18px; }}
+    .control-panel h2 {{ margin-top: 0; }}
+    label {{ display: grid; gap: 7px; margin: 0 0 14px; font-weight: 800; }}
+    select, input {{ width: 100%; min-height: 42px; border: 2px solid #111; background: #fff; color: #111; padding: 8px 10px; font: inherit; }}
+    button {{ width: 100%; min-height: 46px; border: 2px solid #111; background: #111; color: #fff; font: inherit; font-weight: 900; cursor: pointer; }}
+    button:hover {{ background: #333; }}
+    .terminal-panel {{ min-height: 280px; display: grid; grid-template-rows: auto 1fr; background: #111; color: #f8f8f2; }}
+    .terminal-title {{ padding: 10px 14px; border-bottom: 1px solid #555; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }}
+    pre {{ margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; font: 14px/1.55 Consolas, "SFMono-Regular", monospace; }}
+    .design-panel {{ margin-top: 18px; padding: 18px; }}
+    .design-panel h2 {{ margin-top: 0; }}
+    .design-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }}
+    .design-grid ul {{ margin: 0; padding-left: 18px; line-height: 1.5; }}
+    .results {{ margin-top: 28px; }}
+    .results section {{ padding: 18px; margin-bottom: 18px; }}
+    .result-head h2 {{ margin-top: 0; font-size: 34px; }}
     .tweet {{ margin: 26px 0; padding: 22px; border: 2px solid #111; background: #fff; font-size: 22px; line-height: 1.4; font-weight: 700; }}
     .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; padding: 0; list-style: none; }}
     .metrics li {{ display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid #111; padding: 12px 0; }}
+    .chart-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }}
+    .chart {{ margin: 0; padding: 12px; }}
+    .chart figcaption {{ margin-bottom: 8px; font-weight: 900; }}
+    svg {{ width: 100%; height: auto; display: block; }}
+    svg rect, svg circle {{ fill: #111; opacity: .86; }}
+    svg line {{ stroke: #111; stroke-width: 2; }}
+    svg text {{ fill: #111; font: 11px system-ui, sans-serif; }}
+    .table-wrap {{ overflow-x: auto; }}
     .preview {{ width: 100%; border-collapse: collapse; background: #fff; font-size: 14px; overflow-wrap: anywhere; }}
     .preview th, .preview td {{ border: 1px solid #111; padding: 8px; text-align: left; }}
-    @media (max-width: 640px) {{ main {{ width: min(100% - 20px, 1080px); }} h1 {{ font-size: 44px; }} .hero p:not(.eyebrow), .tweet {{ font-size: 17px; }} }}
+    @media (max-width: 820px) {{ .lab-shell, .design-grid {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 640px) {{ main {{ width: min(100% - 20px, 1080px); }} h1 {{ font-size: 44px; }} .hero p:not(.eyebrow), .tweet {{ font-size: 17px; }} .result-head h2 {{ font-size: 26px; }} }}
   </style>
 </head>
 <body>

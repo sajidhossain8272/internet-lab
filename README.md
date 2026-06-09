@@ -17,7 +17,10 @@ The same `app.py` also exposes a top-level WSGI `app` callable for Vercel. The d
 
 - `/` for the experiment launcher
 - `/run/economy`, `/run/attention`, `/run/jobs`, `/run/passwords`, `/run/behavior`
+- `/api/design/<experiment>` for the generated experiment design plan
 - `/api/run/<experiment>` for JSON output
+
+On the Vercel homepage, the lab now behaves like an interactive runner: select an experiment, set the row count and seed, watch the terminal-style progress log, then see the generated result page, SVG charts, metrics, tweet caption, and dataset preview appear dynamically.
 
 Outputs are saved under `outputs/`:
 

@@ -2,14 +2,55 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
+import time
+import uuid
 from html import escape
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any
 from urllib.parse import parse_qs
 
 from internet_experiment_lab.core import ExperimentEngine
 from internet_experiment_lab.custom_model import CustomModelRunner, custom_model_schema, default_custom_spec
 from internet_experiment_lab.tweets import TweetGenerator
+
+_job_queue: Queue[tuple[str, dict[str, Any], int, int]] = Queue()
+_job_store: dict[str, dict[str, Any]] = {}
+
+
+def _job_worker() -> None:
+    while True:
+        job_id, spec, size, seed = _job_queue.get()
+        job = _job_store.get(job_id)
+        if job is None:
+            _job_queue.task_done()
+            continue
+        job["status"] = "running"
+        try:
+            custom = CustomModelRunner().run(spec, size=size, seed=seed)
+            job["status"] = "done"
+            job["result"] = _web_result_payload(custom.result, custom.design)
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = str(exc)
+        finally:
+            _job_queue.task_done()
+
+_thread = threading.Thread(target=_job_worker, daemon=True)
+_thread.start()
+
+
+def _queue_custom_job(spec: dict[str, Any], size: int, seed: int) -> str:
+    job_id = uuid.uuid4().hex
+    _job_store[job_id] = {
+        "status": "pending",
+        "spec": spec,
+        "size": size,
+        "seed": seed,
+    }
+    _job_queue.put((job_id, spec, size, seed))
+    return job_id
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -173,6 +214,27 @@ def app(environ: dict[str, Any], start_response: Any) -> list[bytes]:
             custom = CustomModelRunner()
             custom.validate(payload.get("spec", {}))
             return _json_response(start_response, {"valid": True})
+
+        if path == "api/custom/queue":
+            payload = _read_json_body(environ)
+            size = int(payload.get("size", 1000))
+            seed = int(payload.get("seed", 42))
+            spec = payload.get("spec", {})
+            CustomModelRunner().validate(spec)
+            job_id = _queue_custom_job(spec, size, seed)
+            return _json_response(start_response, {"job_id": job_id})
+
+        if path.startswith("api/custom/status/"):
+            job_id = path.split("/", 3)[3]
+            if job_id not in _job_store:
+                raise ValueError(f"Unknown job id: {job_id}")
+            job = _job_store[job_id]
+            payload = {"status": job["status"]}
+            if job["status"] == "done":
+                payload["result"] = job["result"]
+            if job["status"] == "failed":
+                payload["error"] = job.get("error", "unknown error")
+            return _json_response(start_response, payload)
 
         if path == "api/custom/run":
             payload = _read_json_body(environ)
@@ -558,14 +620,33 @@ customForm.addEventListener("submit", async (event) => {
     }
     addLine("custom model validated.");
 
-    const response = await fetch("/api/custom/run", {
+    const queueResponse = await fetch("/api/custom/queue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ spec, size, seed }),
     });
-    payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "Custom model failed.");
+    const queuePayload = await queueResponse.json();
+    if (!queueResponse.ok) {
+      throw new Error(queuePayload.error || "Job queue failed.");
+    }
+    const jobId = queuePayload.job_id;
+    addLine(`job queued: ${jobId}`);
+
+    while (true) {
+      await wait(1000);
+      addLine(`polling job ${jobId}...`);
+      const statusResponse = await fetch(`/api/custom/status/${jobId}`);
+      const statusPayload = await statusResponse.json();
+      if (!statusResponse.ok) {
+        throw new Error(statusPayload.error || "Job status check failed.");
+      }
+      if (statusPayload.status === "done") {
+        payload = statusPayload.result;
+        break;
+      }
+      if (statusPayload.status === "failed") {
+        throw new Error(statusPayload.error || "Background job failed.");
+      }
     }
   } catch (error) {
     addLine(`custom run failed: ${error.message}`);

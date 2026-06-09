@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import ast
+import functools
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -55,6 +58,64 @@ ALLOWED_AST_NODES = (
     ast.BitAnd,
     ast.BitOr,
 )
+
+
+def _spec_hash(spec: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(spec, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+@functools.lru_cache(maxsize=32)
+def _compile_formula(formula: str, allowed_columns: tuple[str, ...]) -> Any:
+    tree = ast.parse(formula, mode="eval")
+    allowed_names = set(allowed_columns) | set(SAFE_FUNCTIONS)
+    for node in ast.walk(tree):
+        if not isinstance(node, ALLOWED_AST_NODES):
+            raise ValueError(f"Formula uses unsupported syntax: {type(node).__name__}")
+        if isinstance(node, ast.Name) and node.id not in allowed_names:
+            raise ValueError(f"Formula references unknown name: {node.id}")
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.func.id not in SAFE_FUNCTIONS:
+                raise ValueError("Formula can only call safe functions.")
+    return compile(tree, "<custom_model_formula>", "eval")
+
+
+def _sample_variable_value(variable: dict[str, Any], size: int, rng: np.random.Generator) -> Any:
+    kind = str(variable.get("type", "normal")).lower()
+    if kind == "normal":
+        return rng.normal(_float(variable, "mean", 0), _float(variable, "sd", 1), size=size)
+    if kind == "uniform":
+        return rng.uniform(_float(variable, "min", 0), _float(variable, "max", 1), size=size)
+    if kind == "lognormal":
+        return rng.lognormal(_float(variable, "mean", 1), _float(variable, "sigma", 0.5), size=size)
+    if kind == "beta":
+        return rng.beta(_float(variable, "a", 2), _float(variable, "b", 2), size=size)
+    if kind == "poisson":
+        return rng.poisson(max(_float(variable, "lambda", 1), 0.01), size=size)
+    if kind == "bernoulli":
+        return rng.random(size) < min(max(_float(variable, "p", 0.5), 0), 1)
+    if kind == "categorical":
+        choices = variable.get("choices", ["a", "b"])
+        if not isinstance(choices, list) or not choices:
+            raise ValueError("Categorical variables need a non-empty choices list.")
+        probabilities = variable.get("probabilities")
+        if probabilities is not None:
+            probabilities = np.asarray(probabilities, dtype=float)
+            probabilities = probabilities / probabilities.sum()
+        return rng.choice(np.asarray(choices, dtype=str), size=size, p=probabilities)
+    raise ValueError(f"Unsupported variable type: {kind}")
+
+
+@functools.lru_cache(maxsize=16)
+def _build_variable_dataset(variables_json: str, size: int, seed: int) -> pd.DataFrame:
+    variables = json.loads(variables_json)
+    rng = np.random.default_rng(seed)
+    data: dict[str, Any] = {}
+    for variable in variables:
+        name = _slug(variable.get("name", "field"))
+        if not name:
+            raise ValueError("Every variable needs a name.")
+        data[name] = _sample_variable_value(variable, size, rng)
+    return pd.DataFrame(data)
 
 
 @dataclass(frozen=True)
@@ -141,8 +202,7 @@ def custom_model_schema() -> dict[str, Any]:
 class CustomModelRunner:
     def run(self, spec: dict[str, Any], size: int = 1000, seed: int | None = None) -> CustomRun:
         normalized = self._normalize_spec(spec)
-        rng = np.random.default_rng(seed)
-        dataset = self._generate_dataset(normalized, size, rng)
+        dataset = self._generate_dataset(normalized, size, seed)
         self._apply_derived_fields(normalized, dataset)
         metrics = self._compute_metrics(normalized, dataset)
         charts = self._build_charts(normalized)
@@ -187,43 +247,12 @@ class CustomModelRunner:
         self._normalize_spec(spec)
         return True
 
-    def _generate_dataset(self, spec: dict[str, Any], size: int, rng: np.random.Generator) -> pd.DataFrame:
+    def _generate_dataset(self, spec: dict[str, Any], size: int, seed: int | None) -> pd.DataFrame:
         if size < 10 or size > 10000:
             raise ValueError("Custom model size must be between 10 and 10,000 rows.")
 
-        data: dict[str, Any] = {}
-        for variable in spec["variables"]:
-            name = _slug(variable.get("name", "field"))
-            if not name:
-                raise ValueError("Every variable needs a name.")
-            data[name] = self._sample_variable(variable, size, rng)
-
-        return pd.DataFrame(data)
-
-    def _sample_variable(self, variable: dict[str, Any], size: int, rng: np.random.Generator) -> Any:
-        kind = str(variable.get("type", "normal")).lower()
-        if kind == "normal":
-            return rng.normal(_float(variable, "mean", 0), _float(variable, "sd", 1), size=size)
-        if kind == "uniform":
-            return rng.uniform(_float(variable, "min", 0), _float(variable, "max", 1), size=size)
-        if kind == "lognormal":
-            return rng.lognormal(_float(variable, "mean", 1), _float(variable, "sigma", 0.5), size=size)
-        if kind == "beta":
-            return rng.beta(_float(variable, "a", 2), _float(variable, "b", 2), size=size)
-        if kind == "poisson":
-            return rng.poisson(max(_float(variable, "lambda", 1), 0.01), size=size)
-        if kind == "bernoulli":
-            return rng.random(size) < min(max(_float(variable, "p", 0.5), 0), 1)
-        if kind == "categorical":
-            choices = variable.get("choices", ["a", "b"])
-            if not isinstance(choices, list) or not choices:
-                raise ValueError("Categorical variables need a non-empty choices list.")
-            probabilities = variable.get("probabilities")
-            if probabilities is not None:
-                probabilities = np.asarray(probabilities, dtype=float)
-                probabilities = probabilities / probabilities.sum()
-            return rng.choice(np.asarray(choices, dtype=str), size=size, p=probabilities)
-        raise ValueError(f"Unsupported variable type: {kind}")
+        variable_specs_json = json.dumps(spec["variables"], sort_keys=True)
+        return _build_variable_dataset(variable_specs_json, size, seed or 0)
 
     def _apply_derived_fields(self, spec: dict[str, Any], dataset: pd.DataFrame) -> None:
         for field in spec["derived"]:
@@ -231,7 +260,8 @@ class CustomModelRunner:
             formula = str(field.get("formula", "")).strip()
             if not formula:
                 raise ValueError(f"Derived field '{name}' needs a formula.")
-            dataset[name] = _safe_eval(formula, dataset)
+            compiled = field.get("compiled_formula")
+            dataset[name] = _safe_eval(formula, dataset, compiled)
 
     def _compute_metrics(self, spec: dict[str, Any], dataset: pd.DataFrame) -> dict[str, Any]:
         metrics: dict[str, Any] = {}
@@ -356,7 +386,8 @@ class CustomModelRunner:
             formula = str(derived.get("formula", "")).strip()
             if not formula:
                 raise ValueError(f"Derived field '{name}' needs a formula.")
-            _validate_formula(formula, variable_names + derived_names)
+            compiled = _compile_formula(formula, tuple(variable_names + derived_names))
+            derived["compiled_formula"] = compiled
 
         field_names = set(variable_names + derived_names)
         valid_metric_ops = {"mean", "median", "std", "min", "max", "rate", "count", "unique", "corr"}
@@ -401,32 +432,15 @@ class CustomModelRunner:
 
 
 def _validate_formula(formula: str, allowed_columns: list[str]) -> None:
-    tree = ast.parse(formula, mode="eval")
-    allowed_names = set(allowed_columns) | set(SAFE_FUNCTIONS)
-    for node in ast.walk(tree):
-        if not isinstance(node, ALLOWED_AST_NODES):
-            raise ValueError(f"Formula uses unsupported syntax: {type(node).__name__}")
-        if isinstance(node, ast.Name) and node.id not in allowed_names:
-            raise ValueError(f"Formula references unknown name: {node.id}")
-        if isinstance(node, ast.Call):
-            if not isinstance(node.func, ast.Name) or node.func.id not in SAFE_FUNCTIONS:
-                raise ValueError("Formula can only call safe functions.")
+    _compile_formula(formula, tuple(allowed_columns))
 
 
-def _safe_eval(formula: str, dataset: pd.DataFrame) -> Any:
-    tree = ast.parse(formula, mode="eval")
-    allowed_names = set(dataset.columns) | set(SAFE_FUNCTIONS)
-    for node in ast.walk(tree):
-        if not isinstance(node, ALLOWED_AST_NODES):
-            raise ValueError(f"Formula uses unsupported syntax: {type(node).__name__}")
-        if isinstance(node, ast.Name) and node.id not in allowed_names:
-            raise ValueError(f"Formula references unknown name: {node.id}")
-        if isinstance(node, ast.Call):
-            if not isinstance(node.func, ast.Name) or node.func.id not in SAFE_FUNCTIONS:
-                raise ValueError("Formula can only call safe functions.")
+def _safe_eval(formula: str, dataset: pd.DataFrame, compiled: Any | None = None) -> Any:
+    if compiled is None:
+        compiled = _compile_formula(formula, tuple(dataset.columns))
     local_scope = {column: dataset[column].to_numpy() for column in dataset.columns}
     local_scope.update(SAFE_FUNCTIONS)
-    return eval(compile(tree, "<custom_model_formula>", "eval"), {"__builtins__": {}}, local_scope)
+    return eval(compiled, {"__builtins__": {}}, local_scope)
 
 
 def _require_columns(dataset: pd.DataFrame, columns: list[str]) -> None:

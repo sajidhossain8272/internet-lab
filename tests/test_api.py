@@ -1,4 +1,6 @@
 import json
+import time
+import pytest
 from io import BytesIO
 
 from app import app
@@ -57,3 +59,27 @@ def test_api_custom_validate_endpoint_failure():
     assert status.startswith("400")
     data = json.loads(body)
     assert "error" in data
+
+
+def test_api_custom_queue_and_status():
+    spec = default_custom_spec()
+    payload = json.dumps({"spec": spec, "size": 50, "seed": 1}).encode("utf-8")
+    status, body = make_request("/api/custom/queue", method="POST", body=payload)
+    assert status.startswith("200")
+    queue_data = json.loads(body)
+    assert "job_id" in queue_data
+    job_id = queue_data["job_id"]
+
+    for _ in range(20):
+        time.sleep(0.1)
+        status, body = make_request(f"/api/custom/status/{job_id}")
+        assert status.startswith("200")
+        status_data = json.loads(body)
+        if status_data["status"] == "done":
+            assert "result" in status_data
+            assert status_data["result"]["name"] == spec["name"]
+            return
+        if status_data["status"] == "failed":
+            pytest.fail(f"Custom job failed: {status_data.get('error')}")
+
+    pytest.fail("Custom queue job did not complete in time")

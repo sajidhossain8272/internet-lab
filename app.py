@@ -183,7 +183,8 @@ def app(environ: dict[str, Any], start_response: Any) -> list[bytes]:
         return _html_response(start_response, _not_found_page(path), status="404 Not Found")
     except Exception as exc:
         if path.startswith("api/"):
-            return _json_response(start_response, {"error": str(exc)}, status="500 Internal Server Error")
+            status = "400 Bad Request" if isinstance(exc, (ValueError, TypeError)) else "500 Internal Server Error"
+            return _json_response(start_response, {"error": str(exc)}, status=status)
         return _html_response(start_response, _error_page(exc), status="500 Internal Server Error")
 
 

@@ -133,6 +133,7 @@ class CustomModelRunner:
             raise ValueError("Custom model can define up to 16 metrics.")
         if len(normalized["charts"]) > 8:
             raise ValueError("Custom model can define up to 8 charts.")
+        self._validate_normalized_spec(normalized)
         return normalized
 
     def _generate_dataset(self, spec: dict[str, Any], size: int, rng: np.random.Generator) -> pd.DataFrame:
@@ -272,6 +273,93 @@ class CustomModelRunner:
                 "return chart-ready result payload",
             ],
         }
+
+    def _validate_normalized_spec(self, spec: dict[str, Any]) -> None:
+        variable_names: list[str] = []
+        for variable in spec["variables"]:
+            name = _slug(variable.get("name", "field"))
+            if not name:
+                raise ValueError("Every variable requires a valid name.")
+            if name in variable_names:
+                raise ValueError(f"Duplicate variable name: {name}")
+            variable_names.append(name)
+            kind = str(variable.get("type", "")).lower()
+            if kind not in {"normal", "uniform", "lognormal", "beta", "poisson", "bernoulli", "categorical"}:
+                raise ValueError(f"Unsupported variable type: {kind}")
+            if kind == "categorical":
+                choices = variable.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    raise ValueError("Categorical variables need a non-empty choices list.")
+            if kind == "bernoulli":
+                if not 0 <= _float(variable, "p", 0.5) <= 1:
+                    raise ValueError("Beroulli probability 'p' must be between 0 and 1.")
+
+        derived_names: list[str] = []
+        for derived in spec["derived"]:
+            name = _slug(derived.get("name", "derived"))
+            if not name:
+                raise ValueError("Every derived field requires a valid name.")
+            if name in variable_names or name in derived_names:
+                raise ValueError(f"Duplicate derived name: {name}")
+            derived_names.append(name)
+            formula = str(derived.get("formula", "")).strip()
+            if not formula:
+                raise ValueError(f"Derived field '{name}' needs a formula.")
+            _validate_formula(formula, variable_names + derived_names)
+
+        field_names = set(variable_names + derived_names)
+        valid_metric_ops = {"mean", "median", "std", "min", "max", "rate", "count", "unique", "corr"}
+        for metric in spec["metrics"]:
+            op = str(metric.get("op", "mean")).lower()
+            if op not in valid_metric_ops:
+                raise ValueError(f"Unsupported metric operation: {op}")
+            if op == "corr":
+                x = str(metric.get("x", "")).strip()
+                y = str(metric.get("y", "")).strip()
+                if not x or not y:
+                    raise ValueError("Correlation metrics need both x and y columns.")
+                if x not in field_names or y not in field_names:
+                    raise ValueError(f"Unknown correlation column(s): {x}, {y}")
+            elif op == "count":
+                continue
+            elif op == "rate" and metric.get("when"):
+                _validate_formula(str(metric["when"]), variable_names + derived_names)
+            else:
+                column = metric.get("column")
+                if not column:
+                    raise ValueError(f"Metric '{metric.get('name', op)}' needs a column.")
+                if str(column) not in field_names:
+                    raise ValueError(f"Unknown metric column: {column}")
+
+        for chart in spec["charts"]:
+            kind = str(chart.get("kind", "histogram")).lower()
+            if kind not in {"histogram", "scatter", "bar"}:
+                raise ValueError(f"Unsupported chart type: {kind}")
+            x = str(chart.get("x", "")).strip()
+            y = str(chart.get("y", "")).strip()
+            if kind == "scatter":
+                if not x or not y:
+                    raise ValueError("Scatter charts need both x and y values.")
+                if x not in field_names or y not in field_names:
+                    raise ValueError(f"Unknown scatter axis columns: {x}, {y}")
+            elif kind in {"histogram", "bar"}:
+                if not x:
+                    raise ValueError(f"{kind.title()} charts need an x column.")
+                if x not in field_names:
+                    raise ValueError(f"Unknown chart column: {x}")
+
+
+def _validate_formula(formula: str, allowed_columns: list[str]) -> None:
+    tree = ast.parse(formula, mode="eval")
+    allowed_names = set(allowed_columns) | set(SAFE_FUNCTIONS)
+    for node in ast.walk(tree):
+        if not isinstance(node, ALLOWED_AST_NODES):
+            raise ValueError(f"Formula uses unsupported syntax: {type(node).__name__}")
+        if isinstance(node, ast.Name) and node.id not in allowed_names:
+            raise ValueError(f"Formula references unknown name: {node.id}")
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.func.id not in SAFE_FUNCTIONS:
+                raise ValueError("Formula can only call safe functions.")
 
 
 def _safe_eval(formula: str, dataset: pd.DataFrame) -> Any:

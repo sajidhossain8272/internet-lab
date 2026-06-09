@@ -127,6 +127,20 @@ Please follow these basic guidelines:
 - include tests or examples for new behavior
 - document any public API or spec changes in the README
 
+## Developer workflow
+
+Install the project and test helpers with:
+
+```bash
+python -m pip install -e .[dev]
+```
+
+Run the test suite with:
+
+```bash
+python -m pytest
+```
+
 ## License
 
 This project is open source under the MIT License.

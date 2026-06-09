@@ -9,5 +9,13 @@ dependencies = [
   "pandas>=2.2",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
 [tool.setuptools.packages.find]
 include = ["internet_experiment_lab*"]

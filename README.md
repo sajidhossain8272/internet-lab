@@ -23,7 +23,20 @@ The same `app.py` also exposes a top-level WSGI `app` callable for Vercel. The d
 - `/api/custom/template` for a starter custom model spec
 - `/api/custom/run` for running custom JSON model specs
 
-On the Vercel homepage, the lab now behaves like an interactive runner: select a preset experiment or edit a custom model spec, set the row count and seed, watch the terminal-style progress log, then see the generated result page, SVG charts, metrics, tweet caption, and dataset preview appear dynamically.
+On the Vercel homepage, the lab now uses two tabs:
+
+- `Preset Runner`: select a built-in experiment, set the row count and seed, and run it.
+- `Custom Model`: switch to the JSON editor tab, edit the starter spec, and run your own custom synthetic experiment.
+
+How to use the JSON editor:
+
+1. Open the `Custom Model` tab on the homepage.
+2. Edit the starter JSON template, updating `name`, `title`, and `hypothesis`.
+3. Define `variables` and optional `derived` fields, then add `metrics` and `charts`.
+4. Click `Design & Run Custom Model` to validate and execute the spec.
+5. Inspect the generated dataset preview, metrics, and charts in the results panel.
+
+Both modes show a terminal-style progress log, then generate the result page, SVG charts, metrics, tweet caption, and dataset preview dynamically.
 
 Outputs are saved under `outputs/`:
 

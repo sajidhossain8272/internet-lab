@@ -291,34 +291,56 @@ def _home_page() -> str:
           <h1>Internet Experiment Lab</h1>
           <p>Design models, run synthetic experiments, watch the lab console, and generate Twitter-ready result pages.</p>
         </section>
-        <section class="lab-shell">
-          <form id="lab-form" class="control-panel">
-            <h2>Preset Runner</h2>
-            <label>Experiment<select id="experiment">{options}</select></label>
-            <label>Rows<input id="size" type="number" min="10" max="5000" value="1000"></label>
-            <label>Seed<input id="seed" type="number" value="42"></label>
-            <button type="submit">Run Experiment</button>
-          </form>
-          <section class="terminal-panel">
-            <div class="terminal-title">internet-lab cli</div>
-            <pre id="terminal">$ python app.py run economy
-waiting for experiment...</pre>
-          </section>
-        </section>
-        <section class="designer-shell">
-          <div class="designer-intro">
-            <p class="eyebrow">Custom Model Designer</p>
-            <h2>Build any synthetic experiment from a model spec</h2>
-            <p>Define distributions, derived formulas, metrics, and charts. The engine runs the spec without arbitrary Python execution.</p>
+        <section class="workbench">
+          <div class="tabs" role="tablist" aria-label="Experiment modes">
+            <button class="tab active" id="preset-tab" type="button" role="tab" aria-selected="true" aria-controls="preset-panel" data-tab="preset">Preset Runner</button>
+            <button class="tab" id="custom-tab" type="button" role="tab" aria-selected="false" aria-controls="custom-panel" data-tab="custom">Custom Model</button>
           </div>
-          <form id="custom-form" class="designer-form">
-            <div class="designer-controls">
-              <label>Rows<input id="custom-size" type="number" min="10" max="10000" value="1000"></label>
-              <label>Seed<input id="custom-seed" type="number" value="99"></label>
-              <button type="submit">Design & Run Custom Model</button>
-            </div>
-            <label>Model JSON<textarea id="custom-spec" spellcheck="false">{escape(custom_template)}</textarea></label>
-          </form>
+          <section id="preset-panel" class="tab-panel active" role="tabpanel" aria-labelledby="preset-tab">
+            <section class="lab-shell">
+              <form id="lab-form" class="control-panel">
+                <h2>Preset Runner</h2>
+                <p class="panel-copy">Run one of the built-in model templates, then inspect the generated synthetic dataset, metrics, charts, and caption.</p>
+                <label>Experiment<select id="experiment">{options}</select></label>
+                <label>Rows<input id="size" type="number" min="10" max="5000" value="1000"></label>
+                <label>Seed<input id="seed" type="number" value="42"></label>
+                <button type="submit">Run Experiment</button>
+              </form>
+              <section class="terminal-panel">
+                <div class="terminal-title">internet-lab cli</div>
+                <pre id="terminal">$ python app.py run economy
+waiting for experiment...</pre>
+              </section>
+            </section>
+          </section>
+          <section id="custom-panel" class="tab-panel" role="tabpanel" aria-labelledby="custom-tab" hidden>
+            <section class="designer-shell">
+              <div class="designer-intro">
+                <p class="eyebrow">Custom Model Designer</p>
+                <h2>Build any synthetic experiment from a model spec</h2>
+                <p>Define distributions, derived formulas, metrics, and charts. The engine runs the spec without arbitrary Python execution.</p>
+              </div>
+              <section class="editor-help" aria-label="JSON editor instructions">
+                <h3>How to use the JSON editor</h3>
+                <ol>
+                  <li>Start from the starter JSON template and edit the experiment metadata: <strong>name</strong>, <strong>title</strong>, and <strong>hypothesis</strong>.</li>
+                  <li>Define synthetic columns in <strong>variables</strong> using distributions like normal, beta, poisson, bernoulli, lognormal, uniform, or categorical.</li>
+                  <li>Add <strong>derived</strong> formulas to compute new fields from existing ones, for example <code>sigmoid(-2 + posting_days * 0.45)</code>.</li>
+                  <li>Add <strong>metrics</strong> to summarize your dataset with mean, median, rate, count, unique, or correlation values.</li>
+                  <li>Add <strong>charts</strong> with histogram, scatter, or bar, then click <strong>Design &amp; Run Custom Model</strong> to validate and execute the spec.</li>
+                </ol>
+                <p>Tip: the editor validates JSON on submit. Use safe formula functions like <code>log</code>, <code>sqrt</code>, <code>sigmoid</code>, <code>clip</code>, <code>where</code>, <code>minimum</code>, and <code>maximum</code>. The output is synthetic data, not real-world observations.</p>
+              </section>
+              <form id="custom-form" class="designer-form">
+                <div class="designer-controls">
+                  <label>Rows<input id="custom-size" type="number" min="10" max="10000" value="1000"></label>
+                  <label>Seed<input id="custom-seed" type="number" value="99"></label>
+                  <button type="submit">Design & Run Custom Model</button>
+                </div>
+                <label>Model JSON<textarea id="custom-spec" spellcheck="false">{escape(custom_template)}</textarea></label>
+              </form>
+            </section>
+          </section>
         </section>
         <section id="design-panel" class="design-panel" hidden></section>
         <section id="results" class="results" hidden></section>
@@ -372,6 +394,8 @@ const customForm = document.querySelector("#custom-form");
 const customSpecInput = document.querySelector("#custom-spec");
 const customSizeInput = document.querySelector("#custom-size");
 const customSeedInput = document.querySelector("#custom-seed");
+const tabs = document.querySelectorAll(".tab");
+const panels = document.querySelectorAll(".tab-panel");
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const fmt = (value) => {
@@ -390,6 +414,29 @@ const setLine = (line) => {
   terminal.textContent = line;
   terminal.scrollTop = terminal.scrollHeight;
 };
+
+tabs.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const target = tab.dataset.tab;
+    tabs.forEach((item) => {
+      const isActive = item === tab;
+      item.classList.toggle("active", isActive);
+      item.setAttribute("aria-selected", String(isActive));
+    });
+    panels.forEach((panel) => {
+      const isActive = panel.id === `${target}-panel`;
+      panel.classList.toggle("active", isActive);
+      panel.hidden = !isActive;
+    });
+    results.hidden = true;
+    designPanel.hidden = true;
+    if (target === "preset") {
+      setLine(`$ python app.py run ${experimentInput.value}\nwaiting for experiment...`);
+    } else {
+      setLine("$ python app.py run-custom custom_model\nedit JSON, then run.");
+    }
+  });
+});
 
 experimentInput.addEventListener("change", () => {
   const name = experimentInput.value;
@@ -657,11 +704,19 @@ def _page(title: str, body: str) -> str:
     h1 {{ margin: 0; font-size: clamp(42px, 8vw, 84px); line-height: .95; max-width: 900px; }}
     h2 {{ margin: 36px 0 14px; font-size: 22px; }}
     h3 {{ margin: 0 0 8px; font-size: 15px; text-transform: uppercase; letter-spacing: .06em; }}
+    code {{ border: 1px solid #111; padding: 1px 5px; background: #f5f5f2; font-family: Consolas, "SFMono-Regular", monospace; font-size: .92em; }}
     .hero p:not(.eyebrow) {{ max-width: 720px; font-size: 20px; line-height: 1.55; }}
+    .workbench {{ border: 2px solid #111; background: #fff; }}
+    .tabs {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 2px solid #111; }}
+    .tab {{ width: 100%; min-height: 54px; border: 0; border-right: 2px solid #111; background: #fff; color: #111; }}
+    .tab:last-child {{ border-right: 0; }}
+    .tab.active {{ background: #111; color: #fff; }}
+    .tab-panel {{ padding: 18px; }}
     .lab-shell {{ display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 18px; align-items: stretch; }}
     .control-panel, .terminal-panel, .design-panel, .designer-shell, .results section, .tweet, .chart {{ border: 2px solid #111; background: #fff; }}
     .control-panel {{ padding: 18px; }}
     .control-panel h2 {{ margin-top: 0; }}
+    .panel-copy {{ margin: -4px 0 18px; color: #333; line-height: 1.45; }}
     label {{ display: grid; gap: 7px; margin: 0 0 14px; font-weight: 800; }}
     select, input, textarea {{ width: 100%; min-height: 42px; border: 2px solid #111; background: #fff; color: #111; padding: 8px 10px; font: inherit; }}
     textarea {{ min-height: 460px; resize: vertical; font: 13px/1.45 Consolas, "SFMono-Regular", monospace; }}
@@ -670,10 +725,14 @@ def _page(title: str, body: str) -> str:
     .terminal-panel {{ min-height: 280px; display: grid; grid-template-rows: auto 1fr; background: #111; color: #f8f8f2; }}
     .terminal-title {{ padding: 10px 14px; border-bottom: 1px solid #555; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }}
     pre {{ margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; font: 14px/1.55 Consolas, "SFMono-Regular", monospace; }}
-    .designer-shell {{ margin-top: 18px; padding: 18px; }}
+    .designer-shell {{ padding: 18px; }}
     .designer-intro {{ border-bottom: 2px solid #111; padding-bottom: 14px; margin-bottom: 18px; }}
     .designer-intro h2 {{ margin-top: 0; font-size: 32px; }}
     .designer-intro p:not(.eyebrow) {{ max-width: 760px; line-height: 1.55; }}
+    .editor-help {{ border: 2px solid #111; padding: 16px; margin-bottom: 18px; background: #f5f5f2; }}
+    .editor-help ol {{ margin: 10px 0 0; padding-left: 22px; line-height: 1.55; }}
+    .editor-help li {{ margin-bottom: 8px; }}
+    .editor-help p {{ margin: 12px 0 0; line-height: 1.55; }}
     .designer-form {{ display: grid; grid-template-columns: minmax(220px, 280px) 1fr; gap: 18px; align-items: start; }}
     .designer-controls {{ position: sticky; top: 18px; }}
     .design-panel {{ margin-top: 18px; padding: 18px; }}
@@ -697,6 +756,7 @@ def _page(title: str, body: str) -> str:
     .preview {{ width: 100%; border-collapse: collapse; background: #fff; font-size: 14px; overflow-wrap: anywhere; }}
     .preview th, .preview td {{ border: 1px solid #111; padding: 8px; text-align: left; }}
     @media (max-width: 820px) {{ .lab-shell, .designer-form, .design-grid {{ grid-template-columns: 1fr; }} .designer-controls {{ position: static; }} }}
+    @media (max-width: 700px) {{ .tabs {{ grid-template-columns: 1fr; }} .tab {{ border-right: 0; border-bottom: 2px solid #111; }} .tab:last-child {{ border-bottom: 0; }} .tab-panel {{ padding: 12px; }} }}
     @media (max-width: 640px) {{ main {{ width: min(100% - 20px, 1080px); }} h1 {{ font-size: 44px; }} .hero p:not(.eyebrow), .tweet {{ font-size: 17px; }} .result-head h2 {{ font-size: 26px; }} }}
   </style>
 </head>

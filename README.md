@@ -13,6 +13,12 @@ python app.py run passwords
 python app.py run behavior
 ```
 
+The same `app.py` also exposes a top-level WSGI `app` callable for Vercel. The deployed web routes are:
+
+- `/` for the experiment launcher
+- `/run/economy`, `/run/attention`, `/run/jobs`, `/run/passwords`, `/run/behavior`
+- `/api/run/<experiment>` for JSON output
+
 Outputs are saved under `outputs/`:
 
 - `outputs/datasets/<experiment>.csv`
